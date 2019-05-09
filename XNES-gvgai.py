@@ -9,7 +9,6 @@ from scipy import dot, log, sqrt, floor, ones, randn, Inf, argmax, eye, outer
 config = {}
 trainSet = []
 updateDict = []
-mtx = threading.Lock()
 
 class RNN():
     def __init__(self, w=None , u=None, b=None, input_dim=1, output_dim=1):
@@ -65,7 +64,7 @@ def runGame(agent,result,curDict):
     #print('Starting ' + env.env.game + " with Level " + str(env.env.lvl))
     env.reset()
     current_score = 0
-    step = min(10*len(curDict)+10,1000)
+    step = 1000
     pick = np.random.randint(step)
     for t in range(step):
         stateObs = env.render("rgb_array")
@@ -86,7 +85,7 @@ def runGame(agent,result,curDict):
 def fitness(dist=[]):
     threadNum = config["threadNum"]
     outputDim = config["outputDim"]
-    curDict = config["curDict"]
+    curDict = updateDict
     lenCode = len(curDict)
     r = getNetwork(dist,lenCode,outputDim)
     tlist,result = [],[]
@@ -110,6 +109,7 @@ def DRSC(x, curDict, epsilon=3000):
     omega = max(1,len(curDict)/2)
     while np.sum(p) > epsilon and w < omega:
         delta = np.array([])
+        #compute similarity
         for d in curDict:
             eq = p==d
             sim = eq.sum()
@@ -122,9 +122,7 @@ def DRSC(x, curDict, epsilon=3000):
     return code
 
 def IDVQ(trainSet, delta=3000):
-    global mtx
     global updateDict
-    mtx.acquire()
     curDict = updateDict[:]
     for x in trainSet:
         p = x
@@ -135,21 +133,13 @@ def IDVQ(trainSet, delta=3000):
         if np.sum(R) > delta:
             curDict.append(R)
     updateDict = curDict
-    mtx.release()
     return
 
-def preLearn():
-    global config
-    config["curDict"] = updateDict[:]
-    return len(config["curDict"])
-
-def postLearn():
+def trainDict():
     global trainSet
     localSet = trainSet[:]
     trainSet = []
-    t = threading.Thread(target=IDVQ, args=(localSet,))
-    t.start()
-    t.join()
+    IDVQ(localSet)
 
 def initConfig(game):
     global config
@@ -161,10 +151,9 @@ def initConfig(game):
 
 def runTrain(game,batch=10):
     initConfig(game)
-    lenCode = preLearn()
     for i in range(batch):
         fitness()
-    postLearn()
+    trainDict()
     #result = [np.sum(i) for i in updateDict]
     #print("Dictionary: ",result)
 
@@ -176,57 +165,61 @@ def computeUtilities(fitnesses):
     utilities -= 1. / L
     return utilities
 
-def optimizer(f, x0=None, maxEvals=200, targetFitness= 100, batchLearnStep=5):
-    numEvals = 0
-    eta = 0.0001
-    bestFound = None
-    bestFitness = -Inf
-    outputDim = config['outputDim']
-    inputDim = preLearn()
-    keepLenDim = (outputDim+1)*outputDim
-    totalDim  = (outputDim+1+inputDim)*outputDim
-    batchSize = 4 + int(floor(3 * log(totalDim)))    
-    center = -ones(totalDim)
+def optimizer(f, x0=None, maxEvals=10000, targetFitness= 1000, batchLearnStep=1):
+    numEvals = 0    #calculate times
+    eta = 0.01         #the values to insert into the cov matrix
+    bestFound = None    #the best individual in all generation
+    bestFitness = -Inf  #the score that the bestFound had
+    outputDim = config['outputDim'] #this is the size of the neuron, have relationship with individual dim
+    inputDim = len(updateDict)      #this is the size of dictinary, have relationship with individual dim
+    keepLenDim = (outputDim+1)*outputDim    #this refer to the recurrent part and bias part of the weight(dim)
+    totalDim  = (outputDim+1+inputDim)*outputDim    #this is the total size of the individual
+    batchSize = 8 + 2*int(floor(3 * log(totalDim)))    #size of each generation
+    center = -ones(totalDim)    
     A = eye(totalDim)
     if x0 is not None and len(x0)==totalDim:
         center = x0.copy()
 
     while numEvals + batchSize <= maxEvals and bestFitness < targetFitness:
         print("-"*25+"New Batch Start"+25*"-")
-        inputDim = preLearn()
+        #get the info of dictionary, to modify the size of individual
+        inputDim = len(updateDict) 
         totalDim  = (outputDim+1+inputDim)*outputDim
         learningRate = 0.6 * (3 + log(totalDim)) / totalDim / sqrt(totalDim)
-        batchSize = 4 + int(floor(3 * log(totalDim)))  
+        batchSize = 8 + 2*int(floor(3 * log(totalDim)))  
         numEvals += batchSize 
-        preDim = len(center)
+        preDim = len(center)    #the size of previous center
+        orgLenA = len(A)        #the size of previous matrix A
         I = eye(totalDim)
-        orgLenA = len(A)
-        orgInputSize = orgLenA - keepLenDim
-        addNum = totalDim - preDim
+        orgInputSize = orgLenA - keepLenDim #the size of previous input part, that is previous size of the weight that connect to the code
+        addNum = totalDim - preDim  #how much size it grows
 
-        if addNum > 0:           
-            if orgInputSize == 0:
-                Diag = eta*eye(totalDim)
-                Diag[addNum:, addNum:] = A
+        if addNum > 0:         # if size change, we modify the A and center
+            if orgInputSize == 0:   #if we start from zero size dictionary
+                Diag = eta*eye(totalDim)    #we directily enlarge the A matrix
+                Diag[addNum:, addNum:] = A  
                 A = Diag
             else:
-                W = A[:orgInputSize, :orgInputSize]
-                BC = A[:orgInputSize, orgInputSize:]
-                BR = A[orgInputSize:, :orgInputSize]
-                Diag = A[orgInputSize:, orgInputSize:]
-                BC = np.hstack((np.zeros((orgInputSize,addNum)), BC))
-                BR = np.vstack((np.zeros((addNum, orgInputSize)),BR))
-                newDiag = eta*np.eye(addNum+keepLenDim)
+                W = A[:orgInputSize, :orgInputSize] #This part is relative to the dictionary size
+                BC = A[:orgInputSize, orgInputSize:] #This part is the last col(reurrent and bias)
+                BR = A[orgInputSize:, :orgInputSize] #This part is the last row(recurrent and bias)
+                Diag = A[orgInputSize:, orgInputSize:] #This part is the always unchanged part
+                BC = np.hstack((np.zeros((orgInputSize,addNum)), BC)) #add zero before BC
+                BR = np.vstack((np.zeros((addNum, orgInputSize)),BR)) #add zero on the BR
+                newDiag = eta*np.eye(addNum+keepLenDim)   #add zero and eta to the Diag part
                 newDiag[addNum:, addNum:] = Diag
                 Diag = newDiag
-                AR = np.vstack((BC, Diag))
-                AL = np.vstack((W, BR))
-                A = np.hstack((AL, AR))
+                AR = np.vstack((BC, Diag)) #append BC on the Diag
+                AL = np.vstack((W, BR))    #append W on the BR
+                A = np.hstack((AL, AR))     #append AR and AL to get A
+            
+            #This part is to modify the center
             centerInput = center[:-keepLenDim]
             centerBias = center[-keepLenDim:]
             centerBias = np.hstack((np.zeros(addNum), centerBias))
             center = np.hstack((centerInput, centerBias))
 
+        #here is the update for distributation in xnes, if batchLearnStep=1, then it is the same as normal dynamic xnes
         for k in range(batchLearnStep):
             print("-"*25+"New Generation"+25*"-")
             samples = [randn(totalDim) for _ in range(batchSize)]
@@ -242,10 +235,13 @@ def optimizer(f, x0=None, maxEvals=200, targetFitness= 100, batchLearnStep=5):
             if addNum == 0: break
 
         print("Score: ",max(fitnesses),"History: ",bestFitness)
-        postLearn()
+        #train IDVQ and update the dictionary
+        trainDict()
         print("Size of Dict",len(updateDict))
 
-    return bestFound, bestFitness, center
+    return bestFound, bestFitness, center #bestFound is the best indiv till now, and center is the position of last genration
+
+
 
 if __name__ == "__main__":
     runTrain("gvgai-aliens-lvl0-v0")

@@ -9,7 +9,6 @@ from scipy import dot, log, sqrt, floor, ones, randn, Inf, argmax, eye, outer
 config = {}
 trainSet = []
 updateDict = []
-mtx = threading.Lock()
 
 class RNN():
     def __init__(self, w=None , u=None, b=None, input_dim=1, output_dim=1):
@@ -62,10 +61,9 @@ def downSample(stateObs):
 def runGame(agent,result,curDict):
     global trainSet
     env = gym.make(config["game"])
-    #print('Starting ' + env.env.game + " with Level " + str(env.env.lvl))
     env.reset()
     current_score = 0
-    step = 1000
+    step = 150
     pick = np.random.randint(step)
     for t in range(step):
         stateObs = env.render("rgb_array")
@@ -81,12 +79,13 @@ def runGame(agent,result,curDict):
         if t == pick:
             trainSet.append(stateObs)
     result.append(current_score)
+    env.close()
     return
 
 def fitness(dist=[]):
     threadNum = config["threadNum"]
     outputDim = config["outputDim"]
-    curDict = config["curDict"]
+    curDict = updateDict
     lenCode = len(curDict)
     r = getNetwork(dist,lenCode,outputDim)
     tlist,result = [],[]
@@ -122,9 +121,7 @@ def DRSC(x, curDict, epsilon=3000):
     return code
 
 def IDVQ(trainSet, delta=3000):
-    global mtx
     global updateDict
-    mtx.acquire()
     curDict = updateDict[:]
     for x in trainSet:
         p = x
@@ -135,25 +132,17 @@ def IDVQ(trainSet, delta=3000):
         if np.sum(R) > delta:
             curDict.append(R)
     updateDict = curDict
-    mtx.release()
     return
 
-def preLearn():
-    global config
-    config["curDict"] = updateDict[:]
-    return len(config["curDict"])
-
-def postLearn():
+def trainDict():
     global trainSet
     localSet = trainSet[:]
     trainSet = []
-    t = threading.Thread(target=IDVQ, args=(localSet,))
-    t.start()
-    t.join()
+    IDVQ(localSet)
 
 def initConfig(game):
     global config
-    config = {"game":game,"threadNum":4}
+    config = {"game":game,"threadNum":1}
     env = gym.make(config["game"])
     config["outputDim"] = env.action_space.n
     stateObs = env.reset()
@@ -161,10 +150,9 @@ def initConfig(game):
 
 def runTrain(game,batch=10):
     initConfig(game)
-    lenCode = preLearn()
     for i in range(batch):
         fitness()
-    postLearn()
+    trainDict()
     #result = [np.sum(i) for i in updateDict]
     #print("Dictionary: ",result)
 
@@ -182,7 +170,7 @@ def optimizer(f, x0=None, maxEvals=10000, targetFitness= 1000, batchLearnStep=1)
     bestFound = None
     bestFitness = -Inf
     outputDim = config['outputDim']
-    inputDim = preLearn()
+    inputDim = len(updateDict)
     keepLenDim = (outputDim+1)*outputDim
     totalDim  = (outputDim+1+inputDim)*outputDim
     batchSize = 4 + int(floor(3 * log(totalDim)))    
@@ -193,7 +181,7 @@ def optimizer(f, x0=None, maxEvals=10000, targetFitness= 1000, batchLearnStep=1)
 
     while numEvals + batchSize <= maxEvals and bestFitness < targetFitness:
         print("-"*25+"New Batch Start"+25*"-")
-        inputDim = preLearn()
+        inputDim = len(updateDict)
         totalDim  = (outputDim+1+inputDim)*outputDim
         learningRate = 0.6 * (3 + log(totalDim)) / totalDim / sqrt(totalDim)
         batchSize = 4 + int(floor(3 * log(totalDim)))  
@@ -242,7 +230,7 @@ def optimizer(f, x0=None, maxEvals=10000, targetFitness= 1000, batchLearnStep=1)
             if addNum == 0: break
 
         print("Score: ",max(fitnesses),"History: ",bestFitness)
-        postLearn()
+        trainDict()
         print("Size of Dict",len(updateDict))
 
     return bestFound, bestFitness, center

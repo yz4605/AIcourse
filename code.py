@@ -6,7 +6,6 @@ import numpy as np
 config = {}
 trainSet = []
 updateDict = []
-mtx = threading.Lock()
 
 class RNN():
     def __init__(self, w=None , u=None, b=None, input_dim=1, output_dim=1):
@@ -62,7 +61,7 @@ def runGame(agent,result,curDict):
     #print('Starting ' + env.env.game + " with Level " + str(env.env.lvl))
     env.reset()
     current_score = 0
-    step = min(10*len(curDict)+10,1000)
+    step = 1000
     pick = np.random.randint(step)
     for t in range(step):
         stateObs = env.render("rgb_array")
@@ -83,7 +82,7 @@ def runGame(agent,result,curDict):
 def fitness(dist=[]):
     threadNum = config["threadNum"]
     outputDim = config["outputDim"]
-    curDict = config["curDict"]
+    curDict = updateDict
     lenCode = len(curDict)
     r = getNetwork(dist,lenCode,outputDim)
     tlist,result = [],[]
@@ -119,9 +118,7 @@ def DRSC(x, curDict, epsilon=3000):
     return code
 
 def IDVQ(trainSet, delta=3000):
-    global mtx
     global updateDict
-    mtx.acquire()
     curDict = updateDict[:]
     for x in trainSet:
         p = x
@@ -132,21 +129,13 @@ def IDVQ(trainSet, delta=3000):
         if np.sum(R) > delta:
             curDict.append(R)
     updateDict = curDict
-    mtx.release()
     return
 
-def preLearn():
-    global config
-    config["curDict"] = updateDict[:]
-    return len(config["curDict"])
-
-def postLearn():
+def trainDict():
     global trainSet
     localSet = trainSet[:]
     trainSet = []
-    t = threading.Thread(target=IDVQ, args=(localSet,))
-    t.start()
-    t.join()
+    IDVQ(localSet)
 
 def initConfig(game):
     global config
@@ -158,10 +147,9 @@ def initConfig(game):
 
 def runTrain(game,batch=10):
     initConfig(game)
-    lenCode = preLearn()
     for i in range(batch):
         fitness()
-    postLearn()
+    trainDict()
     #result = [np.sum(i) for i in updateDict]
     #print("Dictionary: ",result)
 
