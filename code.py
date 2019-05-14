@@ -23,7 +23,7 @@ class RNN():
         s = 1 / (1 + np.exp(-x))
         return s
     def act(self, stateObs):
-        if self.input_dim <= 0:
+        if self.input_dim <= 1:
             return np.random.randint(0,self.output_dim)
         input_t = stateObs
         output_t = self.sigmoid(np.dot(self.w.T,input_t)+np.dot(self.u,self.state_t)+self.b)
@@ -49,16 +49,14 @@ def getNetwork(dist,lenCode,outputDim):
     return r
 
 def downSample(stateObs):
-    stateObs = stateObs[::2]
-    stateObs = stateObs.reshape((-1,3))
-    stateObs = stateObs[::2]
-    stateObs = np.sum(stateObs.astype("int32")**2,axis=1)
+    stateObs = stateObs[::2,::2]
+    stateObs = np.sum(stateObs.astype("int32")**2,axis=2)
+    stateObs = stateObs.flatten()
     return stateObs
 
 def runGame(agent,result,curDict):
     global trainSet
     env = gym_gvgai.make(config["game"])
-    #print('Starting ' + env.env.game + " with Level " + str(env.env.lvl))
     env.reset()
     current_score = 0
     step = 1000
@@ -72,11 +70,12 @@ def runGame(agent,result,curDict):
         current_score += increScore
         if done:
             trainSet.append(stateObs)
-            print("Game over at game tick " + str(t+1) + " with player " + debug['winner'] + ", score is " + str(current_score))
+            print("Game tick " + str(t+1) + ", increScore: " + str(increScore) + " player " + debug['winner'] + ", total score: " + str(current_score))
             break
         if t == pick:
             trainSet.append(stateObs)
     result.append(current_score)
+    env.close()
     return
 
 def fitness(dist=[]):
@@ -99,7 +98,7 @@ def fitness(dist=[]):
         score = sum(result)
     return score
 
-def DRSC(x, curDict, epsilon=3000):
+def DRSC(x, curDict, epsilon=255):
     p,w,code = x,0,[0]*len(curDict)
     if code == []:
         return code
@@ -117,7 +116,7 @@ def DRSC(x, curDict, epsilon=3000):
         p = p.clip(min=0)
     return code
 
-def IDVQ(trainSet, delta=3000):
+def IDVQ(trainSet, delta=255):
     global updateDict
     curDict = updateDict[:]
     for x in trainSet:
@@ -140,10 +139,13 @@ def trainDict():
 def initConfig(game):
     global config
     config = {"game":game,"threadNum":4}
-    env = gym_gvgai.make(config["game"])
+    env = gym_gvgai.make(game)
     config["outputDim"] = len(env.env.GVGAI.actions())
-    stateObs = env.reset()
+    env.reset()
+    stateObs = env.render("rgb_array")
     #print("row length: ",len(stateObs))
+    stateObs = downSample(stateObs)
+    updateDict.append(stateObs)
 
 def runTrain(game,batch=10):
     initConfig(game)
@@ -152,6 +154,16 @@ def runTrain(game,batch=10):
     trainDict()
     #result = [np.sum(i) for i in updateDict]
     #print("Dictionary: ",result)
+
+def runTest(game,dist):
+    config["game"] = game
+    env = gym_gvgai.make(game)
+    env.reset()
+    stateObs = env.render("rgb_array")
+    stateObs = downSample(stateObs)
+    updateDict[0]=stateObs
+    score = fitness(dist)
+    return score
 
 def computeUtilities(fitnesses):
     L = len(fitnesses)
@@ -162,15 +174,16 @@ def computeUtilities(fitnesses):
     return utilities
 
 if __name__ == "__main__":
-    runTrain("gvgai-testgame1-lvl0-v0")
-
+    runTrain("gvgai-testgame1-lvl0-v0",1)
+    runTest("gvgai-testgame1-lvl1-v0",[])
+    
 '''
 from matplotlib import pyplot as plt
 for i in code.updateDict:
-    p = i.reshape((22,-1)).astype(int)
+    p = i.reshape((45,-1)).astype(int)
     plt.figure()
     plt.imshow(p)
-    #plt.savefig(str(np.sum(i))+".png")
+    plt.savefig(str(i.sum())+".png")
 plt.show()
 '''
 

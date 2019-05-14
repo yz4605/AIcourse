@@ -26,7 +26,7 @@ class RNN():
         s = 1 / (1 + np.exp(-x))
         return s
     def act(self, stateObs):
-        if self.input_dim <= 0:
+        if self.input_dim <= 1:
             return np.random.randint(0,self.output_dim)
         input_t = stateObs
         output_t = self.sigmoid(np.dot(self.w.T,input_t)+np.dot(self.u,self.state_t)+self.b)
@@ -52,21 +52,20 @@ def getNetwork(dist,lenCode,outputDim):
     return r
 
 def downSample(stateObs):
-    stateObs = stateObs[::2]
-    stateObs = stateObs.reshape((-1,3))
-    stateObs = stateObs[::2]
-    stateObs = np.sum(stateObs.astype("int32")**2,axis=1)
+    stateObs = stateObs[::2,::2]
+    stateObs = np.sum(stateObs.astype("int32")**2,axis=2)
+    stateObs = stateObs.flatten()
     return stateObs
 
 def runGame(agent,result,curDict):
     global trainSet
     env = gym_gvgai.make(config["game"])
-    #print('Starting ' + env.env.game + " with Level " + str(env.env.lvl))
     env.reset()
     current_score = 0
     step = 1000
     pick = np.random.randint(step)
     for t in range(step):
+        #env.render()
         stateObs = env.render("rgb_array")
         stateObs = downSample(stateObs)
         code = DRSC(stateObs,curDict)
@@ -75,11 +74,12 @@ def runGame(agent,result,curDict):
         current_score += increScore
         if done:
             trainSet.append(stateObs)
-            print("Game over at game tick " + str(t+1) + " with player " + debug['winner'] + ", score is " + str(current_score))
+            print("Game tick " + str(t+1) + ", increScore: " + str(increScore) + " player " + debug['winner'] + ", total score: " + str(current_score))
             break
         if t == pick:
             trainSet.append(stateObs)
     result.append(current_score)
+    env.close()
     return
 
 def fitness(dist=[]):
@@ -95,6 +95,7 @@ def fitness(dist=[]):
         t.start()
     for x in tlist:
         x.join()
+    #runGame(r,result,curDict)
     result.sort()
     if threadNum > 2:
         score = sum(result[1:-1])
@@ -102,14 +103,13 @@ def fitness(dist=[]):
         score = sum(result)
     return score
 
-def DRSC(x, curDict, epsilon=3000):
+def DRSC(x, curDict, epsilon=255):
     p,w,code = x,0,[0]*len(curDict)
     if code == []:
         return code
     omega = max(1,len(curDict)/2)
     while np.sum(p) > epsilon and w < omega:
         delta = np.array([])
-        #compute similarity
         for d in curDict:
             eq = p==d
             sim = eq.sum()
@@ -121,7 +121,7 @@ def DRSC(x, curDict, epsilon=3000):
         p = p.clip(min=0)
     return code
 
-def IDVQ(trainSet, delta=3000):
+def IDVQ(trainSet, delta=255):
     global updateDict
     curDict = updateDict[:]
     for x in trainSet:
@@ -144,10 +144,13 @@ def trainDict():
 def initConfig(game):
     global config
     config = {"game":game,"threadNum":4}
-    env = gym_gvgai.make(config["game"])
+    env = gym_gvgai.make(game)
     config["outputDim"] = len(env.env.GVGAI.actions())
-    stateObs = env.reset()
+    env.reset()
+    stateObs = env.render("rgb_array")
     #print("row length: ",len(stateObs))
+    stateObs = downSample(stateObs)
+    updateDict.append(stateObs)
 
 def runTrain(game,batch=10):
     initConfig(game)
@@ -157,6 +160,16 @@ def runTrain(game,batch=10):
     #result = [np.sum(i) for i in updateDict]
     #print("Dictionary: ",result)
 
+def runTest(game,dist):
+    config["game"] = game
+    env = gym_gvgai.make(game)
+    env.reset()
+    stateObs = env.render("rgb_array")
+    stateObs = downSample(stateObs)
+    updateDict[0]=stateObs
+    score = fitness(dist)
+    return score
+
 def computeUtilities(fitnesses):
     L = len(fitnesses)
     ranks = rankdata(fitnesses,method='ordinal')-1
@@ -165,7 +178,7 @@ def computeUtilities(fitnesses):
     utilities -= 1. / L
     return utilities
 
-def optimizer(f, x0=None, maxEvals=10000, targetFitness= 1000, batchLearnStep=1):
+def optimizer(f, x0=None, maxEvals=10000, batchLearnStep=1):
     numEvals = 0    #calculate times
     eta = 0.01         #the values to insert into the cov matrix
     bestFound = None    #the best individual in all generation
@@ -180,8 +193,10 @@ def optimizer(f, x0=None, maxEvals=10000, targetFitness= 1000, batchLearnStep=1)
     if x0 is not None and len(x0)==totalDim:
         center = x0.copy()
 
-    while numEvals + batchSize <= maxEvals and bestFitness < targetFitness:
+    while numEvals + batchSize <= maxEvals:
         print("-"*25+"New Batch Start"+25*"-")
+        trainDict()
+        print("Size of Dict",len(updateDict))
         #get the info of dictionary, to modify the size of individual
         inputDim = len(updateDict) 
         totalDim  = (outputDim+1+inputDim)*outputDim
@@ -224,7 +239,7 @@ def optimizer(f, x0=None, maxEvals=10000, targetFitness= 1000, batchLearnStep=1)
             print("-"*25+"New Generation"+25*"-")
             samples = [randn(totalDim) for _ in range(batchSize)]
             fitnesses = [f(dot(A, s) + center) for s in samples]
-            if max(fitnesses) > bestFitness:
+            if max(fitnesses) > bestFitness  or addNum>0:
                 bestFitness = max(fitnesses)
                 bestFound = samples[argmax(fitnesses)]
             utilities = computeUtilities(fitnesses)
@@ -236,15 +251,15 @@ def optimizer(f, x0=None, maxEvals=10000, targetFitness= 1000, batchLearnStep=1)
 
         print("Score: ",max(fitnesses),"History: ",bestFitness)
         #train IDVQ and update the dictionary
-        trainDict()
-        print("Size of Dict",len(updateDict))
 
-    return bestFound, bestFitness, center #bestFound is the best indiv till now, and center is the position of last genration
-
-
+    return dot(A, samples[argmax(fitnesses)]) + center, bestFitness, center #bestFound is the best indiv till now, and center is the position of last genration
 
 if __name__ == "__main__":
-    runTrain("gvgai-aliens-lvl0-v0")
-    optimizer(fitness)
+    runTrain("gvgai-solarfox-lvl0-v0")
+    bestFound,_,_ = optimizer(fitness)
+    score = runTest("gvgai-solarfox-lvl1-v0",bestFound)
+    print(score)
+    score = runTest("gvgai-solarfox-lvl2-v0",bestFound)
+    print(score)
 
 
